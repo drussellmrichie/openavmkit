@@ -3094,11 +3094,14 @@ def _perform_spatial_join(
             "The overlay GeoDataFrame already contains a '__overlay_id__' column. This column is used internally by the spatial join function, and must not be present in the overlay GeoDataFrame."
         )
     gdf_overlay["__overlay_id__"] = range(len(gdf_overlay))
-    # TODO: add more predicates as needed
+    _NATIVE_SJOIN_PREDICATES = {"intersects", "contains", "within", "touches", "crosses", "overlaps"}
     if predicate == "contains_centroid":
         gdf = _perform_spatial_join_contains_centroid(gdf, gdf_overlay)
+    elif predicate in _NATIVE_SJOIN_PREDICATES:
+        gdf = gpd.sjoin(gdf, gdf_overlay, how="left", predicate=predicate)
+        gdf = gdf.drop(columns=["index_right"], errors="ignore")
     else:
-        raise ValueError(f"Invalid spatial join predicate: {predicate}")
+        raise ValueError(f"Invalid spatial join predicate: {predicate}. Valid predicates are: 'contains_centroid', {', '.join(sorted(_NATIVE_SJOIN_PREDICATES))}")
     gdf = gdf.drop(columns=fields_to_tag, errors="ignore")
     gdf = gdf.merge(
         gdf_overlay[["__overlay_id__"] + fields_to_tag], on="__overlay_id__", how="left"
