@@ -112,7 +112,7 @@ class SalesScrutinyStudy:
             df = stuff[key]
             df, cluster_fields = _mark_sales_scrutiny_clusters(df, settings)
             df["ss_id"] = df["ss_id"].astype(str)
-            df["ss_id"] = df["model_group"] + "_" + key + "_" + df["ss_id"]
+            df["ss_id"] = df["model_group"].astype(str) + "_" + key + "_" + df["ss_id"]
             per_area = ""
             denominator = ""
             if key == "i":
