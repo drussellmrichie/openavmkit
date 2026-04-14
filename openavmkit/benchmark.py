@@ -872,7 +872,8 @@ def run_models(
     run_vacant: bool = True,
     run_ensemble: bool = True,
     do_shaps: bool = False,
-    do_plots: bool = False
+    do_plots: bool = False,
+    do_contributions: bool = True,
 ):
     """
     Runs predictive models on the given SalesUniversePair.
@@ -972,7 +973,8 @@ def run_models(
                 verbose,
                 run_ensemble,
                 do_shaps=do_shaps,
-                do_plots=do_plots
+                do_plots=do_plots,
+                do_contributions=do_contributions,
             )
             if mg_results is not None and save_results:
                 dict_all_results[model_group] = mg_results
@@ -1217,6 +1219,7 @@ def run_one_model(
     verbose: bool = False,
     test_keys: list[str] | None = None,
     train_keys: list[str] | None = None,
+    do_contributions: bool = True,
 ) -> SingleModelResults | None:
     """
     Run a single model based on provided parameters and return its results.
@@ -1454,9 +1457,116 @@ def run_one_model(
         t.start("write")
         main_vacant = "vacant" if vacant_only else "main"
         location = get_model_location(settings, main_vacant, model_name, model_group)
-        _write_model_results(results, outpath, settings, location, verbose=verbose)
+        _write_model_results(results, outpath, settings, location, verbose=verbose, do_contributions=do_contributions)
         t.stop("write")
 
+    return results
+
+
+def run_one_hedonic_model(
+    df_sales: pd.DataFrame,
+    df_univ: pd.DataFrame,
+    settings: dict,
+    model_name: str,
+    model_engine: str,
+    model_entry: dict,
+    smr: SingleModelResults,
+    model_group: str,
+    dep_var: str,
+    dep_var_test: str,
+    fields_cat: list[str],
+    outpath: str,
+    hedonic_test_against_vacant_sales: bool = True,
+    save_results: bool = False,
+    verbose: bool = False,
+    do_contributions: bool = True,
+):
+    """Run a single hedonic model based on provided parameters and return its results.
+
+    This function is similar to run_one_model but specifically tailored for hedonic models.
+
+    Parameters
+    ----------
+    df_sales : pandas.DataFrame
+        Sales DataFrame.
+    df_univ : pandas.DataFrame
+        Universe DataFrame.
+    settings : dict
+        Settings dictionary.
+    model_name : str
+        Model unique identifier.
+    model_engine : str
+        Model engine ("xgboost", "mra", etc.)
+    model_entry : dict
+        Model parameters
+    smr : SingleModelResults
+        SingleModelResults object containing initial model results.
+    model_group : str
+        Model group identifier.
+    dep_var : str
+        Dependent variable for training.
+    dep_var_test : str
+        Dependent variable for testing.
+    fields_cat : list[str]
+        List of categorical fields.
+    outpath : str
+        Output path for saving results.
+    hedonic_test_against_vacant_sales : bool, optional
+        Whether to test hedonic models against vacant sales. Defaults to True.
+    save_results : bool, optional
+        Whether to save results. Defaults to False.
+    verbose : bool, optional
+        If True, prints additional information. Defaults to False.
+
+    Returns
+    -------
+    SingleModelResults or None
+        SingleModelResults if successful, else None.
+    """
+    location_field_neighborhood = get_important_field(
+        settings, "loc_neighborhood", df_sales
+    )
+    location_field_market_area = get_important_field(
+        settings, "loc_market_area", df_sales
+    )
+    location_fields = [location_field_neighborhood, location_field_market_area]
+
+    ds = get_data_split_for(
+        model_name=model_name,
+        model_engine=model_engine,
+        model_entry=model_entry,
+        model_group=model_group,
+        location_fields=location_fields,
+        ind_vars=smr.ind_vars,
+        df_sales=df_sales,
+        df_universe=df_univ,
+        settings=settings,
+        dep_var=dep_var,
+        dep_var_test=dep_var_test,
+        fields_cat=fields_cat,
+        interactions=smr.ds.interactions.copy(),
+        test_keys=smr.ds.test_keys,
+        train_keys=smr.ds.train_keys,
+        vacant_only=False,
+        hedonic=True,
+        hedonic_test_against_vacant_sales=hedonic_test_against_vacant_sales,
+    )
+    # We call this here because we are re-running prediction without first calling run(), which would call this
+    ds.split()
+    if hedonic_test_against_vacant_sales and len(ds.y_sales) < 15:
+        print(f"Skipping hedonic model because there are not enough sale records...")
+        return None
+    smr.ds = ds
+    results = _predict_one_model(
+        smr=smr,
+        model_name=model_name,
+        model_engine=model_engine,
+        outpath=outpath,
+        settings=settings,
+        save_results=save_results,
+        verbose=verbose,
+        do_contributions=do_contributions,
+    )
     return results
 
 
@@ -1710,6 +1820,97 @@ def _format_benchmark_df(df: pd.DataFrame, transpose: bool = True):
     if transpose:
         df = df.transpose()
     return df.to_markdown()
+
+
+def _predict_one_model(
+    smr: SingleModelResults,
+    model_name: str,
+    model_engine: str,
+    outpath: str,
+    settings: dict,
+    save_results: bool = False,
+    verbose: bool = False,
+    do_contributions: bool = True,
+) -> SingleModelResults:
+    """
+    Predict results for one model, using saved results if available.
+    """
+    ds = smr.ds
+
+    timing = TimingData()
+    timing.start("total")
+    
+    main_vacant_hedonic = "hedonic" if ds.hedonic else "vacant" if ds.vacant_only else "main"
+
+    results: SingleModelResults | None = None
+
+    if model_engine == "garbage":
+        garbage_model: GarbageModel = smr.model
+        results = predict_garbage(ds, garbage_model, timing, verbose)
+    elif model_engine == "garbage_normal":
+        garbage_model: GarbageModel = smr.model
+        results = predict_garbage(ds, garbage_model, timing, verbose)
+    elif model_engine == "mean":
+        mean_model: AverageModel = smr.model
+        results = predict_average(ds, mean_model, timing, verbose)
+    elif model_engine == "median":
+        median_model: AverageModel = smr.model
+        results = predict_average(ds, median_model, timing, verbose)
+    elif model_engine == "naive_area":
+        area_model: NaiveAreaModel = smr.model
+        results = predict_naive_area(ds, area_model, timing, verbose)
+    elif model_engine == "local_area":
+        area_model: LocalAreaModel = smr.model
+        results = predict_local_area(ds, area_model, timing, verbose)
+    elif model_engine == "assessor" or model_engine == "pass_through":
+        assr_model: PassThroughModel = smr.model
+        results = predict_pass_through(ds, assr_model, timing, verbose)
+    elif model_engine == "ground_truth":
+        ground_truth_model: GroundTruthModel = smr.model
+        results = predict_ground_truth(ds, ground_truth_model, timing, verbose)
+    elif model_engine == "spatial_lag" or model_engine == "spatial_lag_area":
+        lag_model: SpatialLagModel = smr.model
+        results = predict_spatial_lag(ds, lag_model, timing, verbose)
+    elif model_engine == "mra":
+        # MRA is a special case where we have to call run_ instead of predict_, because there's delicate state mangling.
+        # We pass the pretrained `model` object to run_mra() to get it to skip training and move straight to prediction
+        mra_model: MRAModel = smr.model
+        results = run_mra(ds, mra_model.intercept, verbose, mra_model)
+    elif model_engine == "multi_mra":
+        multi_mra_model: MultiMRAModel = smr.model
+        results = predict_multi_mra(ds, multi_mra_model, timing, verbose)
+    elif model_engine == "kernel":
+        kernel_reg: KernelReg = smr.model
+        results = predict_kernel(ds, kernel_reg, timing, verbose)
+    elif model_engine == "gwr":
+        gwr_model: GWRModel = smr.model
+        results = predict_gwr(ds, gwr_model, timing, verbose)
+    elif model_engine == "xgboost":
+        xgb_model: XGBoostModel = smr.model
+        results = predict_xgboost(ds, xgb_model, timing, verbose)
+    elif model_engine == "lightgbm":
+        lgbm_model: LightGBMModel = smr.model
+        results = predict_lightgbm(ds, lgbm_model, timing, verbose)
+    elif model_engine == "catboost":
+        catboost_model: CatBoostModel = smr.model
+        results = predict_catboost(ds, catboost_model, timing, verbose)
+    elif model_engine == "slice":
+        slice_model: LandSLICEModel = smr.model
+        results = predict_slice(ds, slice_model, timing, verbose)
+    
+    if save_results:
+
+        mvh = settings.get("modeling", {}).get("models", {}).get(main_vacant_hedonic, {})
+        model_entry = mvh.get("model_name", mvh.get("default", {}))
+        location = model_entry.get("location", None)
+        if location is None:
+            location = get_important_field(settings, "loc_neighborhood")
+
+        location = get_model_location(settings, main_vacant_hedonic, model_name)
+        _write_model_results(results, outpath, settings, location, verbose=verbose, do_contributions=do_contributions)
+
+    return results
+
 
 def _clamp_land_predictions(
     results: SingleModelResults, 
@@ -1992,13 +2193,61 @@ def _assemble_model_results(results: SingleModelResults, settings: dict):
     return dfs
 
 
-def _write_model_results(results: SingleModelResults, outpath: str, settings: dict, location: str = None, verbose:bool = False):
+class _DS:
+    """Minimal stand-in for DataSplit, used only to carry ind_vars and X matrices for the deferred contributions pass."""
+    def __init__(self, ind_vars, X_test, X_sales, X_univ):
+        self.ind_vars = ind_vars
+        self.X_test = X_test
+        self.X_sales = X_sales
+        self.X_univ = X_univ
+
+
+class _SMRContribContext:
+    """
+    Minimal context needed by write_model_parameters / write_shaps for the
+    contributions-only pass.  Holds the trained model, ind_vars, X matrices,
+    and the four DataFrames (geometry stripped to reduce pickle size).
+    """
+    def __init__(self, model, ind_vars, df_train, df_test, df_sales, df_universe):
+        self.model = model
+        # Subset to ind_vars only — avoid storing the full DataFrames twice
+        safe_ind_vars = [v for v in ind_vars if v in df_test.columns]
+        self.ds = _DS(
+            ind_vars=ind_vars,
+            X_test=df_test[safe_ind_vars],
+            X_sales=df_sales[safe_ind_vars],
+            X_univ=df_universe[safe_ind_vars],
+        )
+        self.df_train = df_train
+        self.df_test = df_test
+        self.df_sales = df_sales
+        self.df_universe = df_universe
+
+
+def _write_model_results(
+    results: SingleModelResults,
+    outpath: str,
+    settings: dict,
+    location: str = None,
+    verbose: bool = False,
+    do_contributions: bool = True,
+):
     """
     Write model results to disk in parquet and CSV formats.
+
+    Parameters
+    ----------
+    do_contributions : bool, optional
+        If True (default), compute and write SHAP contribution CSVs immediately.
+        If False, skip contributions and instead save a ``_smr_for_contribs.pkl``
+        file alongside the predictions so that
+        :func:`openavmkit.pipeline.compute_model_contributions` can run the
+        contributions pass separately (allowing it to be checkpointed
+        independently of model training).
     """
-    
+
     print(f"Write model results to {outpath}")
-    
+
     dfs = _assemble_model_results(results, settings)
     path = f"{outpath}/{results.model_name}"
     if "*" in path:
@@ -2006,11 +2255,11 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
     os.makedirs(path, exist_ok=True)
     for key in dfs:
         df = dfs[key]
-        
+
         if "geometry" in df.columns:
             df = gpd.GeoDataFrame(df, geometry="geometry", crs=getattr(df, "crs", None))
             df = ensure_geometries(df)
-        
+
         df.to_parquet(f"{path}/pred_{key}.parquet")
         if "geometry" in df:
             df = df.drop(columns=["geometry"])
@@ -2027,10 +2276,30 @@ def _write_model_results(results: SingleModelResults, outpath: str, settings: di
 
     with open(f"{path}/pred_universe.pkl", "wb") as f:
         pickle.dump(results.pred_univ, f, protocol=pickle.HIGHEST_PROTOCOL)
-    
+
     params_path = f"{path}"
-    
-    write_model_parameters(results.model, results, location, params_path, verbose=verbose)
+
+    if not do_contributions:
+        # Save the minimal context needed for the deferred contributions pass.
+        # Geometry columns are stripped to reduce pickle size; all other columns
+        # (needed by _contrib_to_unit_values) are preserved.
+        ctx = _SMRContribContext(
+            model=results.model,
+            ind_vars=results.ds.ind_vars,
+            df_train=results.df_train.drop(columns=["geometry"], errors="ignore"),
+            df_test=results.df_test.drop(columns=["geometry"], errors="ignore"),
+            df_sales=results.df_sales.drop(columns=["geometry"], errors="ignore"),
+            df_universe=results.df_universe.drop(columns=["geometry"], errors="ignore"),
+        )
+        smr_pkl_path = f"{path}/_smr_for_contribs.pkl"
+        with open(smr_pkl_path, "wb") as f:
+            pickle.dump(ctx, f, protocol=pickle.HIGHEST_PROTOCOL)
+        import json as _json
+        with open(f"{path}/_model_features.json", "w") as f:
+            _json.dump({"ind_vars": list(ctx.ds.ind_vars)}, f)
+        print(f"  Contributions deferred — saved context to {smr_pkl_path}")
+
+    write_model_parameters(results.model, results, location, params_path, verbose=verbose, do_contributions=do_contributions)
 
     try:
         universe_parquet = gpd.read_parquet(f"{path}/pred_universe.parquet")
@@ -3575,6 +3844,145 @@ def _calc_variable_recommendations(
     return df
 
 
+def _run_hedonic_models(
+    settings: dict,
+    model_group: str,
+    models_to_run: list[str],
+    model_entries: dict,
+    all_results: MultiModelResults,
+    df_sales: pd.DataFrame,
+    df_universe: pd.DataFrame,
+    dep_var: str,
+    dep_var_test: str,
+    fields_cat: list[str],
+    verbose: bool = False,
+    save_results: bool = False,
+    run_ensemble: bool = True,
+    do_plots: bool = False,
+    do_contributions: bool = True,
+):
+    """
+    Run hedonic models and ensemble them, then update the benchmark.
+    """
+    hedonic_results = {}
+
+    # Run hedonic models
+    outpath = f"out/models/{model_group}/hedonic_land"
+    if not os.path.exists(outpath):
+        os.makedirs(outpath)
+
+    location_field_neighborhood = get_important_field(
+        settings, "loc_neighborhood", df_sales
+    )
+    location_field_market_area = get_important_field(
+        settings, "loc_market_area", df_sales
+    )
+    location_fields = [location_field_neighborhood, location_field_market_area]
+
+    # Re-run the models one by one and stash the results
+    for model_name in models_to_run:
+        if model_name not in all_results.model_results:
+            continue
+        smr = all_results.model_results[model_name]
+        model_engine = smr.model_engine
+        model_entry = model_entries.get(model_name, {})
+        ds = get_data_split_for(
+            model_name=model_name,
+            model_engine=model_engine,
+            model_entry=model_entry,
+            model_group=model_group,
+            location_fields=location_fields,
+            ind_vars=smr.ind_vars,
+            df_sales=df_sales,
+            df_universe=df_universe,
+            settings=settings,
+            dep_var=dep_var,
+            dep_var_test=dep_var_test,
+            fields_cat=fields_cat,
+            interactions=smr.ds.interactions.copy(),
+            test_keys=smr.ds.test_keys,
+            train_keys=smr.ds.train_keys,
+            vacant_only=False,
+            hedonic=True,
+            hedonic_test_against_vacant_sales=True,
+        )
+
+        # if the other one is one-hot encoded, we need to reconcile the fields
+        ds = ds.reconcile_fields_with_foreign(smr.ds)
+
+        # We call this here because we are re-running prediction without first calling run(), which would call this
+        ds.split()
+        if len(ds.y_sales) < 15:
+            print(
+                f"Skipping hedonic model because there are not enough sale records...."
+            )
+            return
+        smr.ds = ds
+        
+        results = _predict_one_model(
+            smr=smr,
+            model_name=model_name,
+            model_engine=model_engine,
+            outpath=outpath,
+            settings=settings,
+            save_results=save_results,
+            verbose=verbose,
+        )
+        if results is not None:
+            hedonic_results[model_name] = results
+
+    all_hedonic_results = MultiModelResults(
+        model_results=hedonic_results, benchmark=_calc_benchmark(hedonic_results), df_univ=df_universe, df_sales=df_sales
+    )
+
+    if run_ensemble:
+        ensemble_results = _perform_ensemble(
+            df_sales=df_sales,
+            df_universe=df_universe,
+            model_group=model_group,
+            vacant_only=False,
+            hedonic=True,
+            outpath=outpath,
+            dep_var=dep_var,
+            dep_var_test=dep_var_test,
+            all_results=all_hedonic_results,
+            settings=settings,
+            verbose=verbose
+        )
+        out_pickle = f"{outpath}/model_ensemble.pickle"
+        with open(out_pickle, "wb") as file:
+            pickle.dump(ensemble_results, file)
+
+        # Calculate final results, including ensemble
+        all_hedonic_results.add_model("ensemble", ensemble_results)
+    
+    print(f"\n************************************************************")
+    print(f"HEDONIC LAND BENCHMARK ({model_group}) -- Assessor Metrics")
+    print(f"************************************************************\n")
+    print(all_hedonic_results.benchmark.print())
+    
+    max_trim = _get_max_ratio_study_trim(settings, model_group)
+
+    title = "HEDONIC LAND"
+    perf_metrics = _model_performance_metrics(model_group, all_hedonic_results, title, max_trim)
+    print(perf_metrics)
+    print("")
+
+    if do_plots:
+        _model_performance_plots(model_group, all_hedonic_results, title)
+        print("")
+
+    # Post-valuation metrics
+    title = f"{title} (POST-VALUATION DATE)"
+    if not all_hedonic_results.benchmark.test_post_val_empty:
+        post_val_results = _get_post_valuation_mmr(all_hedonic_results)
+        perf_metrics = _model_performance_metrics(model_group, post_val_results, title, max_trim)
+        print(perf_metrics)
+        print("")
+
+        print("")
+
+
 def _perform_ensemble(
     df_sales: pd.DataFrame | None,
     df_universe: pd.DataFrame | None,
@@ -4045,7 +4453,8 @@ def _run_models(
     verbose: bool = False,
     run_ensemble: bool = True,
     do_shaps: bool = False,
-    do_plots: bool = False
+    do_plots: bool = False,
+    do_contributions: bool = True,
 ):
     """
     Run models for a given model group and process ensemble results.
@@ -4086,6 +4495,18 @@ def _run_models(
 
     model_entries = settings_model.get("models").get(main_vacant, {})
     model_entries = model_entries.get(model_group, model_entries)
+
+    # Apply per-group ind_vars overrides from settings.modeling.models.<mvh>.group_overrides.<group>
+    _group_ind_vars = (
+        model_entries
+        .get("group_overrides", {})
+        .get(model_group, {})
+        .get("ind_vars", None)
+    )
+    if _group_ind_vars is not None:
+        import copy
+        model_entries = copy.deepcopy(model_entries)
+        model_entries.setdefault("default", {})["ind_vars"] = _group_ind_vars
 
     if models_to_run is None:
         models_to_run = list(model_entries.keys())
@@ -4186,6 +4607,7 @@ def _run_models(
             use_saved_params=use_saved_params,
             save_results=save_results,
             verbose=verbose,
+            do_contributions=do_contributions,
         )
         if results is not None:
             model_results[model_name] = results
@@ -4284,6 +4706,28 @@ def _run_models(
             print("")
 
             print("")
+
+    is_hedonic = bool(settings_model_instructions.get("hedonic", {}).get("run", None))
+    if not vacant_only and is_hedonic:
+        t.start("run hedonic models")
+        _run_hedonic_models(
+            settings=settings,
+            model_group=model_group,
+            models_to_run=models_to_run,
+            model_entries=model_entries,
+            all_results=all_results,
+            df_sales=df_sales,
+            df_universe=df_univ,
+            dep_var=dep_var,
+            dep_var_test=dep_var_test,
+            fields_cat=fields_cat,
+            verbose=verbose,
+            save_results=save_results,
+            run_ensemble=run_ensemble,
+            do_plots=do_plots,
+            do_contributions=do_contributions,
+        )
+        t.stop("run hedonic models")
 
     t.stop("total")
 
