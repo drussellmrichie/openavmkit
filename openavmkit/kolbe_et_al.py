@@ -6,7 +6,7 @@ Implementation of the Kolbe et al. (2023) paper.
 **Experimental and WIP - not yet ready for production use.**
 """
 
-from scipy.spatial._ckdtree import cKDTree
+from scipy.spatial import cKDTree
 from scipy.special import comb
 
 import numpy as np
@@ -319,4 +319,9 @@ def kolbe_et_al_estimate(
         verbose=verbose,
     )
 
-    return ols_res, pd.Series(a_hat, index=df.index[diff_order:], name="a_hat")
+    # Re-index by parcel key so callers can join back to sup.universe.
+    # Parcels with multiple sales appear multiple times; take the mean.
+    _keys = df["key"].iloc[diff_order:].values
+    _a_hat_keyed = pd.Series(a_hat, index=_keys, name="a_hat")
+    _a_hat_keyed = _a_hat_keyed.groupby(level=0).mean()
+    return ols_res, _a_hat_keyed
