@@ -268,11 +268,24 @@ def kolbe_et_al_estimate(
     # 2. Spatial ordering
     # ---------------------------------------------
 
-    order = hilbert_order(df["latitude"].values, df["longitude"].values)
-    df = df.iloc[order].reset_index(drop=True)
+    # Order the FULL dataset (sales + unsold universe) by Hilbert curve for AWS smoothing.
+    order_full = hilbert_order(df["latitude"].values, df["longitude"].values)
+    df = df.iloc[order_full].reset_index(drop=True)
+
+    # For the OLS step we need sales-only: unsold universe rows have p=NaN and
+    # break differencing windows (a window of diff_order+1 consecutive rows must
+    # all be sold for the differenced value to be non-NaN).  With diff_order=10
+    # and ~13% of rows sold this yields essentially zero valid OLS rows.
+    # Fix: Hilbert-order the transacted rows separately for the OLS fit.
+    # Residuals (land price = actual price/area − building contribution) can only
+    # be computed for transacted properties; AWS smoothing then infers land price
+    # for the full universe from those transacted residuals.
+    df_sales_ols = df[df["p"].notna()].copy().reset_index(drop=True)
+    order_sales = hilbert_order(df_sales_ols["latitude"].values, df_sales_ols["longitude"].values)
+    df_sales_ols = df_sales_ols.iloc[order_sales].reset_index(drop=True)
 
     # ----------------------------------------------
-    # 3. Higher-order differences
+    # 3. Higher-order differences (sales-only ordering)
     # ----------------------------------------------
 
     d = difference_weights(diff_order)
@@ -281,11 +294,11 @@ def kolbe_et_al_estimate(
         X = np.column_stack([s.shift(k) for k in range(diff_order + 1)])
         return pd.Series(X[diff_order:] @ d, index=s.index[diff_order:])
 
-    y_d = diff_series(df["p"])
-    X_d = pd.DataFrame({c: diff_series(df[c]) for c in p_area_cols})
+    y_d = diff_series(df_sales_ols["p"])
+    X_d = pd.DataFrame({c: diff_series(df_sales_ols[c]) for c in p_area_cols})
     X_d = sm.add_constant(X_d, has_constant='add')
 
-    # drop rows with NaNs (unsold rows propagate NaN through differences)
+    # All rows are sold so NaNs arise only at the diff_order burn-in edges.
     valid = y_d.notna() & X_d.notna().all(axis=1)
     y_d = y_d[valid]
     X_d = X_d.loc[valid]
@@ -296,6 +309,13 @@ def kolbe_et_al_estimate(
     # 4. AWS residual smoothing
     # ----------------------------------------------
 
+    # Compute residuals for all rows in the full Hilbert-ordered df.
+    # For sold parcels: residual = actual price/area − predicted building contribution
+    #                            ≈ land price/area.
+    # For unsold parcels: p is NaN → residual is NaN.
+    # AWS smoothing initialises NaN residuals from the spatial median of sold
+    # residuals and then smooths over all parcel coordinates, inferring land
+    # price for the full universe.
     resid = df["p"].iloc[diff_order:] - (
         df.loc[diff_order:, p_area_cols] @ ols_res.params[p_area_cols]
         + ols_res.params["const"]
