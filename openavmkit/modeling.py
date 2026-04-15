@@ -3490,11 +3490,17 @@ def run_lightgbm(
 
     # Guard: LightGBM needs non-empty 2D train matrix
     if ds.X_train is None or ds.X_train.shape[0] < 1 or ds.X_train.shape[1] < 1:
-        raise ValueError(
-            f"LightGBM: empty training data (X_train shape={None if ds.X_train is None else ds.X_train.shape})."
+        import warnings
+        warnings.warn(
+            f"LightGBM: empty training data (X_train shape="
+            f"{None if ds.X_train is None else ds.X_train.shape}). "
+            f"Skipping model — not enough training rows after split/filter."
         )
+        return None
     if ds.y_train is None or len(ds.y_train) < 1:
-        raise ValueError("LightGBM: empty y_train.")
+        import warnings
+        warnings.warn("LightGBM: empty y_train. Skipping model.")
+        return None
 
     cat_vars = [v for v in ds.categorical_vars if v in ds.X_train.columns.values]
     cat_data = TreeBasedCategoricalData.from_training_data(
