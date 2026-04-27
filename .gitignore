@@ -40,3 +40,5 @@ cache/
 out/
 
 .claude/
+.DS_Store
+.pytest_cache/
