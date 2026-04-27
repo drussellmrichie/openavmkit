@@ -36,3 +36,6 @@ tests/cache/
 cache/
 
 out/
+
+.DS_Store
+.pytest_cache/
