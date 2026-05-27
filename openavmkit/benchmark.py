@@ -1064,6 +1064,11 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict):
         df_univ = sup.universe.copy()
         t.stop("copy")
         t.start("merge")
+        # Drop model_group from df_all before merging: sup.universe already has the
+        # authoritative model_group (set by tag_model_groups_sup + any reassignments).
+        # Keeping it in df_all causes pandas to create model_group_x / model_group_y
+        # in the output universe.parquet, which confuses downstream consumers.
+        df_all = df_all.drop(columns=["model_group"], errors="ignore")
         df_univ = df_univ.merge(df_all, on="key", how="left")
         t.stop("merge")
 
