@@ -6128,6 +6128,19 @@ def _prepare_shap_dfs(
     # Check for divergent baseline due to approximate shap calculation
     
     ## get the same feature matrix used for SHAP (X_to_explain)
+    # Filter list_vars to columns present in df — ind_vars from settings.json may include
+    # features that were silently dropped during DataSplit.split() (e.g. Stage 1 variables
+    # absent from the spatial-lag checkpoint). The SHAP explanation already used the correct
+    # reduced feature set; we only need the same columns for the baseline divergence check.
+    _missing_vars = [v for v in list_vars if v not in df.columns]
+    if _missing_vars:
+        import warnings
+        warnings.warn(
+            f"_prepare_shap_dfs: dropping {len(_missing_vars)} list_vars absent from df "
+            f"(Stage 1 features not in spatial-lag checkpoint?): {_missing_vars[:5]}{'...' if len(_missing_vars)>5 else ''}",
+            stacklevel=2,
+        )
+        list_vars = [v for v in list_vars if v in df.columns]
     X_to_explain = df[list_vars]
 
     ## raw model predictions on those exact rows
