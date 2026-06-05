@@ -1553,8 +1553,6 @@ def run_one_hedonic_model(
         test_keys=smr.ds.test_keys,
         train_keys=smr.ds.train_keys,
         vacant_only=False,
-        hedonic=True,
-        hedonic_test_against_vacant_sales=hedonic_test_against_vacant_sales,
     )
     # We call this here because we are re-running prediction without first calling run(), which would call this
     ds.split()
@@ -3908,8 +3906,6 @@ def _run_hedonic_models(
             test_keys=smr.ds.test_keys,
             train_keys=smr.ds.train_keys,
             vacant_only=False,
-            hedonic=True,
-            hedonic_test_against_vacant_sales=True,
         )
 
         # if the other one is one-hot encoded, we need to reconcile the fields
@@ -3946,7 +3942,6 @@ def _run_hedonic_models(
             df_universe=df_universe,
             model_group=model_group,
             vacant_only=False,
-            hedonic=True,
             outpath=outpath,
             dep_var=dep_var,
             dep_var_test=dep_var_test,
