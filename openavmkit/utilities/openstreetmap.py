@@ -80,7 +80,11 @@ class OpenStreetMapService:
             }
         elif thing == "rivers":
             return {
-                "water": ["river", "stream"]
+                # "water" tags polygon water *areas*; "waterway" tags the
+                # linestring river/stream features (how OSM maps Pittsburgh's
+                # three rivers). Both are needed for full river coverage.
+                "water": ["river", "stream"],
+                "waterway": ["river", "stream"]
             }
         elif thing == "water":
             return {
