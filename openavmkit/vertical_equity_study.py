@@ -57,8 +57,15 @@ def get_vertical_equity_scores(df, sale_field: str, valuation_field: str) -> Dic
     )
     #VEI is 100 * (median of last percentile grop - median of first percentile group)/median_ratio
     vei_score = 100 * (group_stats[group_stats.index == (percentile_group_count - 1)].iloc[0]["ratio"] - group_stats[group_stats.index == 0].iloc[0]["ratio"]) / median_ratio
-    # VEI significance = 100 * (Lower CI for Highest PG - Upper CI for Lowest PG)/median
-    vei_significance = 100 * (group_stats[group_stats.index == (percentile_group_count -1)].iloc[0]["lower"] - group_stats[group_stats.index == 0].iloc[0]["upper"]) / median_ratio
+    # VEI significance compares the INNER confidence bounds of the two extreme
+    # tiers: (upper CI of highest PG) - (lower CI of lowest PG), as % of median.
+    # When the tiers' CIs do not overlap the inequity is statistically
+    # distinguishable and this keeps the same sign as vei; when they overlap it
+    # flips sign, signalling non-significance. The previous version used the
+    # OUTER bounds (lower of highest - upper of lowest), which always widened the
+    # gap beyond the point estimate and could never flip sign, so it could not
+    # distinguish a significant gap from a non-significant one.
+    vei_significance = 100 * (group_stats[group_stats.index == (percentile_group_count - 1)].iloc[0]["upper"] - group_stats[group_stats.index == 0].iloc[0]["lower"]) / median_ratio
     return {
         "vei": vei_score,
         "vei_significance": vei_significance,
