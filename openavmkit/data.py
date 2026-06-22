@@ -1270,6 +1270,13 @@ def _enrich_df_census(
         field_map = census_service.get_census_map(census_settings)
         census_cols_to_keep = ["std_geoid"] + [field_map[key] for key in field_map]
 
+        # Include derived census columns that are computed during the fetch
+        # (e.g. pct_minority from B03002) but are not raw ACS fields in the map,
+        # so they survive the spatial join onto the parcels.
+        for derived in ("pct_minority",):
+            if derived in census_boundaries.columns and derived not in census_cols_to_keep:
+                census_cols_to_keep.append(derived)
+
         # Filter to columns that actually exist on the boundaries
         census_cols_to_keep = [
             col for col in census_cols_to_keep if col in census_boundaries.columns
