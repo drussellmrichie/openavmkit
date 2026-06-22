@@ -532,28 +532,43 @@ def _run_ratio_study_breakdowns(
                 else:
                     quantiles = breakdown.get("quantiles", 0)
                     slice_size = breakdown.get("slice_size", 0)
+                    bins_cfg = breakdown.get("bins")
                     df_sub = df.copy()
-                    if quantiles > 0:
-                        bins = [0]
-                        labels = []
-                        last_value = 0
-                        for q in range(quantiles + 1):
-                            try:
-                                quantile_value = np.nanquantile(df_sub[by], q / quantiles)
-                            except IndexError:
-                                continue
-                            percentile = f"{q / quantiles * 100:3.0f}th %ile<br>({last_value:,.0f} - {quantile_value:,.0f})"
-                            # Only extend the edges when they strictly increase.
-                            # Guards against NaN (nan > x is False) and against
-                            # heavily-skewed variables (e.g. pct_minority, where
-                            # many tracts share a value so quantile edges collapse
-                            # to duplicates) — either of which otherwise makes
-                            # pd.cut raise "bins must increase monotonically" and
-                            # crash the whole ratio study.
-                            if np.isfinite(quantile_value) and quantile_value > bins[-1]:
-                                bins.append(quantile_value)
-                                labels.append(percentile)
-                            last_value = quantile_value
+                    if bins_cfg or quantiles > 0:
+                        if bins_cfg:
+                            # Explicit value-based bin edges (e.g. pct_minority
+                            # composition bands: [0, 0.1, 0.25, 0.5, 0.75, 1.0]).
+                            # Better than quantiles for heavily-skewed variables
+                            # where equal-count bins collapse onto a single value,
+                            # and lets an equity study isolate a majority-minority
+                            # (>0.5) stratum. Optional "bin_labels" overrides the
+                            # auto-generated edge labels.
+                            bins = list(bins_cfg)
+                            labels = breakdown.get(
+                                "bin_labels",
+                                [f"{bins[i]:g} - {bins[i + 1]:g}" for i in range(len(bins) - 1)],
+                            )
+                        else:
+                            bins = [0]
+                            labels = []
+                            last_value = 0
+                            for q in range(quantiles + 1):
+                                try:
+                                    quantile_value = np.nanquantile(df_sub[by], q / quantiles)
+                                except IndexError:
+                                    continue
+                                percentile = f"{q / quantiles * 100:3.0f}th %ile<br>({last_value:,.0f} - {quantile_value:,.0f})"
+                                # Only extend the edges when they strictly increase.
+                                # Guards against NaN (nan > x is False) and against
+                                # heavily-skewed variables (e.g. pct_minority, where
+                                # many tracts share a value so quantile edges
+                                # collapse to duplicates) — either of which
+                                # otherwise makes pd.cut raise "bins must increase
+                                # monotonically" and crash the whole ratio study.
+                                if np.isfinite(quantile_value) and quantile_value > bins[-1]:
+                                    bins.append(quantile_value)
+                                    labels.append(percentile)
+                                last_value = quantile_value
                         if len(bins) >= 2:
                             df_sub["quantile"] = pd.cut(
                                 df_sub[by],
