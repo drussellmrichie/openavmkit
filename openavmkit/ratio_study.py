@@ -539,21 +539,33 @@ def _run_ratio_study_breakdowns(
                         last_value = 0
                         for q in range(quantiles + 1):
                             try:
-                                quantile_value = np.quantile(df_sub[by], q / quantiles)
+                                quantile_value = np.nanquantile(df_sub[by], q / quantiles)
                             except IndexError:
                                 continue
                             percentile = f"{q / quantiles * 100:3.0f}th %ile<br>({last_value:,.0f} - {quantile_value:,.0f})"
-                            if quantile_value not in bins:
+                            # Only extend the edges when they strictly increase.
+                            # Guards against NaN (nan > x is False) and against
+                            # heavily-skewed variables (e.g. pct_minority, where
+                            # many tracts share a value so quantile edges collapse
+                            # to duplicates) — either of which otherwise makes
+                            # pd.cut raise "bins must increase monotonically" and
+                            # crash the whole ratio study.
+                            if np.isfinite(quantile_value) and quantile_value > bins[-1]:
                                 bins.append(quantile_value)
                                 labels.append(percentile)
                             last_value = quantile_value
-                        df_sub["quantile"] = pd.cut(
-                            df_sub[by],
-                            bins=bins,
-                            labels=labels,
-                            include_lowest=True,
-                            duplicates="drop",
-                        )
+                        if len(bins) >= 2:
+                            df_sub["quantile"] = pd.cut(
+                                df_sub[by],
+                                bins=bins,
+                                labels=labels,
+                                include_lowest=True,
+                                duplicates="drop",
+                            )
+                        else:
+                            # Degenerate column (all-NaN or constant) — nothing to
+                            # bin; emit no quantile groups for this breakdown.
+                            df_sub["quantile"] = pd.Series(index=df_sub.index, dtype="object")
 
                         for q in labels:
                             q_clean = _clean_label(q)
