@@ -487,6 +487,12 @@ def filter_invalid_sales(
     excluded_sales = []
     total_excluded = 0
 
+    # Apply any derived column calculations before filtering
+    calc_dict = {k: v for k, v in s_validation.get("calc", {}).items() if not k.startswith("__")}
+    if calc_dict:
+        from openavmkit.calculations import perform_calculations
+        df_sales = perform_calculations(df_sales, calc_dict)
+
     # Identify sales by filter
     filter_conditions = s_validation.get("filter", [])
     if s_validation.get("enabled", False):
