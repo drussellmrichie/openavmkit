@@ -2757,7 +2757,17 @@ def _enrich_vacant(df_in: pd.DataFrame, settings: dict, label:str = "") -> pd.Da
         df["is_vacant"] = False
 
         df.loc[pd.isna(df[f"bldg_area_finished_{unit}"]), f"bldg_area_finished_{unit}"] = 0
-        df.loc[df[f"bldg_area_finished_{unit}"].eq(0), "is_vacant"] = True
+        # A parcel is vacant only if it has NO building by ANY measure. Finished area
+        # (bldg_area_finished_*) is residential-only in some jurisdictions (e.g. Berks,
+        # where commercial floor area lives in bldg_area_commercial_sqft), so also honor
+        # commercial building area and living units where those columns exist. Without
+        # this, commercial/industrial/apartment buildings are misflagged as vacant land
+        # and have their building characteristics stripped by _simulate_removed_buildings.
+        no_bldg = df[f"bldg_area_finished_{unit}"].eq(0)
+        for _extra in (f"bldg_area_commercial_{unit}", "livunits"):
+            if _extra in df.columns:
+                no_bldg = no_bldg & pd.to_numeric(df[_extra], errors="coerce").fillna(0).eq(0)
+        df.loc[no_bldg, "is_vacant"] = True
 
         idx_vacant = df["is_vacant"].eq(True)
 
