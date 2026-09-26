@@ -933,6 +933,7 @@ def run_models(
         model_groups = get_model_group_ids(settings, df_univ)
 
     dict_all_results = {}
+    dict_vacant_results = {}
     t.stop("setup")
 
     t.start("run model groups")
@@ -977,13 +978,18 @@ def run_models(
                 do_contributions=do_contributions,
             )
             if mg_results is not None and save_results:
-                dict_all_results[model_group] = mg_results
+                # Keep main and vacant apart: a group that runs both must not have its
+                # vacant results overwrite the main ones (market_value comes from main).
+                if main_vacant == "main":
+                    dict_all_results[model_group] = mg_results
+                else:
+                    dict_vacant_results[model_group] = mg_results
         t.stop(f"model group: {model_group}")
     t.stop("run model groups")
 
     if save_results:
         t.start("write")
-        write_out_all_results(sup, dict_all_results)
+        write_out_all_results(sup, dict_all_results, dict_vacant_results)
         t.stop("write")
 
     print("**********TIMING FOR RUN ALL MODELS***********")
@@ -993,12 +999,30 @@ def run_models(
     return dict_all_results
 
 
-def write_out_all_results(sup: SalesUniversePair, all_results: dict):
+def _ensemble_prediction_frame(mm_results, col_name: str, model_group: str):
+    """Return [key, col_name] from a group's ensemble universe prediction, or None."""
+    if mm_results is None or "ensemble" not in mm_results.model_results:
+        return None
+    smr = mm_results.model_results["ensemble"]
+    df_pred = smr.df_universe[["key", smr.field_prediction]].rename(
+        columns={smr.field_prediction: col_name}
+    )
+    df_pred["model_group"] = model_group
+    return df_pred
+
+
+def write_out_all_results(
+    sup: SalesUniversePair, all_results: dict, vacant_results: dict | None = None
+):
     """Write out all model results to CSV and Parquet files.
 
     This function collects predictions from all model groups and writes them to a single
     DataFrame, which is then saved to both CSV and Parquet formats. It also merges the
     predictions with the universe DataFrame to include all keys.
+
+    ``market_value`` is always the MAIN model's ensemble. The vacant model's ensemble
+    (land-only evidence) goes in a separate ``market_value_vacant`` column, so a model
+    group that runs both never has one silently replace the other.
 
     Parameters
     ----------
@@ -1006,57 +1030,34 @@ def write_out_all_results(sup: SalesUniversePair, all_results: dict):
         The SalesUniversePair containing sales and universe data.
     all_results : dict
         A dictionary where keys are model group identifiers and values are MultiModelResults
-        containing the results for each model group.
+        for the main models of each group.
+    vacant_results : dict, optional
+        Same shape, for the vacant models.
     """
     t = TimingData()
+
+    def _stack(results: dict | None, col_name: str):
+        frames = []
+        for model_group, mm_results in (results or {}).items():
+            df_pred = _ensemble_prediction_frame(mm_results, col_name, model_group)
+            if df_pred is not None:
+                frames.append(df_pred)
+        return pd.concat(frames) if frames else None
+
+    t.start("read")
+    df_main = _stack(all_results, "market_value")
+    df_vac = _stack(vacant_results, "market_value_vacant")
+    t.stop("read")
+
     df_all = None
-
-    for model_group in all_results:
-        t.start(f"model group: {model_group}")
-        t.start("read")
-        mm_results: MultiModelResults = all_results[model_group]
-
-        # Skip if no results for this model group
-        if mm_results is None:
-            t.stop("read")
-            t.stop(f"model group: {model_group}")
-            continue
-
-        # Collect all ensemble types to output
-        output_models = []
-        if "ensemble" in mm_results.model_results:
-            output_models.append("ensemble")
-        if not output_models:
-            t.stop("read")
-            t.stop(f"model group: {model_group}")
-            continue
-
-        # For each output model, extract predictions and add to df_univ_local
-        df_univ_local = None
-        for model_type in output_models:
-            smr = mm_results.model_results[model_type]
-            col_name = (
-                f"market_value_{model_type}"
-                if "ensemble" not in model_type
-                else "market_value"
-            )
-            df_pred = smr.df_universe[["key", smr.field_prediction]].rename(
-                columns={smr.field_prediction: col_name}
-            )
-            if df_univ_local is None:
-                df_univ_local = df_pred
-            else:
-                df_univ_local = df_univ_local.merge(df_pred, on="key", how="outer")
-        df_univ_local["model_group"] = model_group
-
+    if df_main is not None:
+        df_all = df_main
+    if df_vac is not None:
+        df_vac = df_vac.drop(columns=["model_group"])
         if df_all is None:
-            df_all = df_univ_local
+            df_all = df_vac
         else:
-            t.start("concat")
-            df_all = pd.concat([df_all, df_univ_local])
-            t.stop("concat")
-
-        t.stop(f"model group: {model_group}")
+            df_all = df_all.merge(df_vac, on="key", how="outer")
 
     # Only proceed with writing if we have results
     if df_all is not None:
@@ -3122,6 +3123,11 @@ def _optimize_ensemble(
     if "ground_truth" in ensemble_list:
         ensemble_list.remove("ground_truth")
 
+    # One real engine left: there is nothing to optimise, and returning [] would make
+    # _run_ensemble fall back to every model (benchmark passthroughs included).
+    if len(ensemble_list) == 1:
+        return list(ensemble_list)
+
     best_list = []
     best_score = float("inf")
 
@@ -3164,7 +3170,11 @@ def _optimize_ensemble_iteration(
     df_sales_ensemble = df_sales[["key_sale", "key"]].copy()
     df_univ_ensemble = df_univ[["key"]].copy()
     if len(ensemble_list) == 0:
-        ensemble_list = [key for key in all_results.model_results.keys()]
+        # Never fall back onto benchmark passthroughs (OPA's own assessment).
+        ensemble_list = [
+            key for key in all_results.model_results.keys()
+            if key not in ("assessor", "ground_truth")
+        ] or list(all_results.model_results.keys())
     timing.stop("setup")
 
     timing.start("parameter_search")
